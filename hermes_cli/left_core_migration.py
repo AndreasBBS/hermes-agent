@@ -81,18 +81,17 @@ def _merged_platform_block(home: Path, name: str) -> Optional[dict]:
         logger.debug("left-core: unreadable config for %s", home, exc_info=True)
         yaml_cfg, managed = {}, {}
     yaml_cfg = yaml_cfg if isinstance(yaml_cfg, dict) else {}
-    aliases = _platform_aliases(name)
-    if aliases:  # core read an old manifest key as *name*: fold it in per layer, so layer order still decides
-        gw_data, yaml_cfg, managed = (_fold_alias_layer(layer, name, aliases) for layer in (gw_data, yaml_cfg, managed))
+    spellings = frozenset({name, *_platform_aliases(name)})  # core read an old manifest key as *name* too
     platforms = config_loader.merge_platform_sections(
-        yaml_cfg, yaml_cfg.get("gateway"), gw_data, also=frozenset({name}))
+        yaml_cfg, yaml_cfg.get("gateway"), gw_data, also=spellings)
     authored = config_loader.snapshot_authored_extra(config_loader.merge_platform_sections(
-        yaml_cfg, yaml_cfg.get("gateway"), {}, also=frozenset({name})))
+        yaml_cfg, yaml_cfg.get("gateway"), {}, also=spellings))
     # Reconcile cross-shape pins before the root bridge, even before this platform is registered.
     managed["platforms"] = config_loader.merge_platform_sections(
-        managed, managed.get("gateway"), {}, also=frozenset({name}))
+        managed, managed.get("gateway"), {}, also=spellings)
     config_loader._apply_managed_extra(authored, managed, platforms)
-    block = platforms.get(name)
+    # GatewayConfig.from_dict maps every spelling to one Platform: the last block in merged order replaces the rest.
+    block = next((platforms[k] for k in reversed(list(platforms)) if k in spellings), None)
     root = yaml_cfg.get(name)
     if isinstance(root, dict):  # a top-level ``<name>:`` block, bridged as bridge_platform_shared_keys does: its
         from gateway.config import PlatformConfig  # adapter keys beat gateway.json's extra, not config.yaml's nested one
@@ -106,25 +105,6 @@ def _merged_platform_block(home: Path, name: str) -> Optional[dict]:
 
 def _platform_aliases(platform: str) -> tuple[str, ...]:
     return next((f.plugin_names for f in LEFT_CORE if f.platform == platform), ())
-
-
-def _fold_alias_layer(layer: dict, name: str, aliases: tuple[str, ...]) -> dict:
-    """*layer* (gateway.json, config.yaml or the managed overlay) with its ``platforms`` / ``gateway.platforms``
-    blocks under an old key folded into *name*'s; the canonical key wins within the layer."""
-    def fold(platforms: Any) -> Any:
-        if not isinstance(platforms, dict) or not any(isinstance(platforms.get(a), dict) for a in aliases):
-            return platforms
-        out = {k: v for k, v in platforms.items() if k not in aliases}
-        for old in (platforms[a] for a in aliases if isinstance(platforms.get(a), dict)):
-            new = out.get(name) if isinstance(out.get(name), dict) else {}
-            out[name] = {**old, **new, "extra": {**(old.get("extra") or {}), **(new.get("extra") or {})}}
-        return out
-    layer = dict(layer)
-    if "platforms" in layer:
-        layer["platforms"] = fold(layer["platforms"])
-    if isinstance(layer.get("gateway"), dict) and "platforms" in layer["gateway"]:
-        layer["gateway"] = {**layer["gateway"], "platforms": fold(layer["gateway"]["platforms"])}
-    return layer
 
 
 def platform_configured_on(home: Path, name: str) -> bool:
